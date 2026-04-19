@@ -1,0 +1,21 @@
+// HTTP/1.1 200
+// Content-Type: application/json
+// Connection: keep-alive
+// Date: Sun, 19 Apr 2026 08:47:36 GMT
+// Last-Modified: Mon, 29 Sep 2025 07:37:37 GMT
+// ETag: "68da3741-ef"
+// Access-Control-Allow-Origin: *
+// Access-Control-Allow-Methods: GET, POST, OPTIONS
+// Access-Control-Allow-Headers: DNT,X-Mx-ReqToken,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Authorization,user-header
+// Accept-Ranges: bytes
+// Strict-Transport-Security: max-age=15724800; includeSubDomains
+// Server: nginx/1.251
+// Content-Length: 239
+
+{
+    "self": "https://self.hdu.edu.cn/cas-success",
+    "cas_server": "https://sso.hdu.edu.cn",
+    "link_server": "https://sso.hdu.edu.cn/linkid/protected",
+    "sso": "https://sso.hdu.edu.cn",
+    "portal": "https://myapp.example.com"
+}
