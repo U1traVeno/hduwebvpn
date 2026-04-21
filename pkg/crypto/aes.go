@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"crypto/aes"
+	"crypto/md5"
 	"encoding/base64"
 	"fmt"
 )
@@ -52,4 +53,11 @@ func EncryptPasswordAES(cryptoKey, password string) (string, error) {
 
 	// 6. Base64 编码
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
+func MD5Hash(text string) string {
+	// 计算 MD5 哈希
+	hash := md5.Sum([]byte(text))
+	// 返回十六进制字符串
+	return fmt.Sprintf("%x", hash)
 }
