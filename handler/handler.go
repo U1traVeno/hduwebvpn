@@ -161,13 +161,13 @@ func serviceAuthHandler(c *Context) {
 
 	resp := c.Response
 	if isRedirect(resp.StatusCode) && resp.BusinessRedirectURL != nil {
-		// 发生了重定向，一般是因为 SSO 认证失败了。有时候服务不会把用户直接重定向到 SSO, 
+		// 发生了重定向，一般是因为 SSO 认证失败了。有时候服务不会把用户直接重定向到 SSO,
 		// 而是先重定向到一个中转页，这个中转页会解析出真正的 SSO 地址并重定向过去。
 		// 这里为了省事直接判断只要发生了重定向就执行 SSO 认证流程，认证成功后再重新执行一次请求。
 		c.logger.InfoContext(
-			context.Background(), 
-			"received redirect", 
-			"location", resp.Header.Get("Location"), 
+			context.Background(),
+			"received redirect",
+			"location", resp.Header.Get("Location"),
 			"business_redirect", resp.BusinessRedirectURL.String(),
 		)
 		username := c.client.GetUsername()
