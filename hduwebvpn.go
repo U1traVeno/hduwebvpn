@@ -22,7 +22,6 @@ type ClientOption = client.ClientOption
 // Re-export types from request package
 type Request = request.Request
 type Response = request.Response
-type RealRequest = request.RealRequest
 
 // Re-export types from service package
 type Service = service.Service

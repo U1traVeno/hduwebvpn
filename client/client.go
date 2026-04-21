@@ -130,6 +130,16 @@ func (c *Client) GetTransport() transport.Transport {
 	return c.transport
 }
 
+// GetUsername returns the username
+func (c *Client) GetUsername() string {
+	return c.username
+}
+
+// GetPassword returns the password
+func (c *Client) GetPassword() string {
+	return c.password
+}
+
 // GetBaseURL parses and returns the base URL for a service
 func GetBaseURL(baseURL string) (*url.URL, error) {
 	return url.Parse(baseURL)

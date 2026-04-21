@@ -44,11 +44,13 @@ type Transport interface {
 ```
 
 **Direct Transport:**
+
 - `Encode`: 原样返回
 - `Decode`: 原样返回
 - `IsAuthFailure`: 永远返回 false（内网直连不存在通道层掉线）
 
 **WebVPN Transport:**
+
 - `Encode`: 加上 `https-xxx-443.webvpn.hdu.edu.cn` 壳子
 - `Decode`: 剥离 WebVPN 壳子，还原为原始业务地址
 - `IsAuthFailure`: 如果 Location 的 Host 不是 `*.webvpn.hdu.edu.cn` 且不是自身域名，说明掉出了 WebVPN 环境
@@ -71,6 +73,7 @@ type Context struct {
 ```
 
 通过 `Context.Next()` 递归调用链，实现"洋葱模型"。每个 Handler 可以：
+
 - 在 `c.Next()` 之前做前置处理（如 URL 翻译）
 - 在 `c.Next()` 之后做后置处理（如重定向检查）
 - 使用 `c.Abort()` 阻止后续 handler 执行
@@ -145,7 +148,6 @@ type Request struct {
 
 ```go
 type Response struct {
-    RealReq             *RealRequest
     RawResponse         *http.Response // 原始的 http.Response
     StatusCode          int
     Header              http.Header
@@ -154,19 +156,6 @@ type Response struct {
     // 核心新增：用于分离重定向逻辑
     RealRedirectURL     *url.URL // 从 Location Header 直接解析出的实际重定向地址
     BusinessRedirectURL *url.URL // 经过 Transport 解码还原后的业务层重定向地址
-}
-```
-
-### RealRequest
-
-`RealRequest` 是实际发出的真实请求：
-
-```go
-type RealRequest struct {
-    URL     string      // 真实请求 URL（webvpn 转换后）
-    Method  string      // GET/POST 等
-    Header  http.Header // 实际发出的请求头
-    Body    []byte      // 实际发出的请求体
 }
 ```
 
@@ -231,20 +220,13 @@ score, err := client.Service("jw").Get("/sso/driot4login")
 
 ### 4. 真实请求与响应
 
-`Response` 包含完整真实请求（`RealReq`）和真实响应信息，透明化 webvpn 的 URL 转换：
+`Response` 包含完整真实请求和真实响应信息，透明化 webvpn 的 URL 转换：
 
 ```golang
 resp, err := client.Service("course").Do(req)
 if err != nil {
     panic(err)
 }
-
-// 真实请求 URL（webvpn 转换后）
-fmt.Println(resp.RealReq.URL)
-// https://https-course-hdu-edu-cn-443.webvpn.hdu.edu.cn/api/access/user/info
-
-// 实际发出的请求头（含 webvpn-token Cookie）
-fmt.Println(resp.RealReq.Header.Get("Cookie"))
 
 // 业务响应
 fmt.Println(resp.StatusCode) // 200
