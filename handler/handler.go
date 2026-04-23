@@ -124,7 +124,11 @@ func transportHandler(c *Context) {
 		return
 	}
 
-	c.Response.BusinessReqURL = c.client.GetTransport().Decode(c.Response.RawResponse.Request.URL)
+	if decoded := c.client.GetTransport().Decode(c.Response.RawResponse.Request.URL); decoded != nil {
+		c.Response.BusinessReqURL = decoded
+	} else {
+		c.Response.BusinessReqURL = c.Response.RawResponse.Request.URL
+	}
 
 	resp := c.Response
 	// http.Client 已经默认会跟随重定向。因此，最终的响应应该要么是被重定向到 webvpn 的登录页，要么就是最终的业务响应。
@@ -156,23 +160,24 @@ func serviceAuthHandler(c *Context) {
 	resp := c.Response
 	// http.Client 已经默认会跟随重定向。因此，最终的响应应该要么是被重定向到 SSO 登录页，要么就是最终的业务响应。
 	// 如果是前者，则直接执行 SSO 认证；如果是后者，则说明请求已经成功完成，无需再认证。
-	if sso.IsAuthFailure(resp.BusinessReqURL.Host) {
-		c.logger.InfoContext(
-			context.Background(),
-			"received SSO redirect",
-			"location", resp.Header.Get("Location"),
-		)
-		username := c.client.GetUsername()
-		password := c.client.GetPassword()
-
-		if _, err := sso.Auth(context.Background(), c.client.GetHTTPClient(), resp.RawResponse.Request.URL.String(), username, password); err != nil {
-			c.Err = fmt.Errorf("sso auth failed: %w", err)
-			return
-		}
-		// 重新执行请求
-		serviceAuthHandler(c)
+	if resp.BusinessReqURL == nil || !sso.IsAuthFailure(resp.BusinessReqURL.Host) {
 		return
 	}
+
+	c.logger.InfoContext(
+		context.Background(),
+		"received SSO redirect",
+		"location", resp.Header.Get("Location"),
+	)
+	username := c.client.GetUsername()
+	password := c.client.GetPassword()
+
+	if _, err := sso.Auth(context.Background(), c.client.GetHTTPClient(), resp.RawResponse.Request.URL.String(), username, password); err != nil {
+		c.Err = fmt.Errorf("sso auth failed: %w", err)
+		return
+	}
+	// 重新执行请求
+	serviceAuthHandler(c)
 }
 
 // Do sends a request by building a Context and starting the middleware chain

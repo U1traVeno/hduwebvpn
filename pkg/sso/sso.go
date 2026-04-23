@@ -193,16 +193,11 @@ func Auth(
 		return "", fmt.Errorf("SSO login failed: no ticket in redirect location")
 	}
 
-	// 使用与原 client 共享 CookieJar 和 Transport 的 client 完成后续重定向链，
+	// 使用与原 client 完成后续重定向链，
 	// 确保服务端在跳转过程中设置的 cookies（如业务系统 session）被正确保存。
-	followClient := &http.Client{
-		Transport: httpClient.Transport,
-		Jar:       httpClient.Jar,
-		Timeout:   httpClient.Timeout,
-	}
 	followReq, err := http.NewRequestWithContext(ctx, http.MethodGet, loc, nil)
 	if err == nil {
-		followResp, err := followClient.Do(followReq)
+		followResp, err := httpClient.Do(followReq)
 		if err == nil && followResp != nil {
 			_, _ = io.Copy(io.Discard, followResp.Body)
 			_ = followResp.Body.Close()

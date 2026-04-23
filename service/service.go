@@ -39,7 +39,11 @@ func (s *Service) NewRequest(method, path string, body []byte) (*request.Request
 	}
 
 	// 拼接 business URL
-	businessURL := base.ResolveReference(&url.URL{Path: path})
+	parsedPath, err := url.Parse(path)
+	if err != nil {
+		return nil, err
+	}
+	businessURL := base.ResolveReference(parsedPath)
 
 	req := &request.Request{
 		Service:     s,
