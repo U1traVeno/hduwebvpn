@@ -8,6 +8,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/cookiejar"
+	"net/url"
+	"strings"
+	"time"
 
 	"github.com/U1traVeno/hduwebvpn/pkg/sso"
 	"github.com/U1traVeno/hduwebvpn/request"
@@ -80,37 +83,84 @@ func (c *Context) Abort() {
 	c.index = len(c.handlers)
 }
 
-// execBaseDo executes the actual HTTP request
+// execBaseDo executes the actual HTTP request with timeout and retry logic
 func (c *Context) execBaseDo() {
-	httpReq, err := http.NewRequest(c.Request.Method, c.Request.RealURL.String(), nil)
-	if err != nil {
-		c.Err = err
+	const maxRetries = 5
+	const baseDelay = 100 * time.Millisecond
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(baseDelay * time.Duration(attempt))
+		}
+
+		httpReq, err := http.NewRequest(c.Request.Method, c.Request.RealURL.String(), nil)
+		if err != nil {
+			c.Err = err
+			return
+		}
+
+		for k, v := range c.Request.Header {
+			httpReq.Header[k] = v
+		}
+
+		httpResp, err := c.client.GetHTTPClient().Do(httpReq)
+		if err != nil {
+			if isRetriableError(err) && attempt < maxRetries {
+				continue
+			}
+			c.Err = err
+			return
+		}
+
+		if httpResp.StatusCode >= 500 && attempt < maxRetries {
+			_ = httpResp.Body.Close()
+			continue
+		}
+
+		bodyBytes, err := io.ReadAll(httpResp.Body)
+		_ = httpResp.Body.Close()
+		if err != nil {
+			c.Err = fmt.Errorf("read response body: %w", err)
+			return
+		}
+
+		c.Response = &request.Response{
+			RawResponse: httpResp,
+			StatusCode:  httpResp.StatusCode,
+			Header:      httpResp.Header,
+			Body:        bodyBytes,
+		}
 		return
 	}
+}
 
-	for k, v := range c.Request.Header {
-		httpReq.Header[k] = v
+func isRetriableError(err error) bool {
+	if err == nil {
+		return false
 	}
 
-	httpResp, err := c.client.GetHTTPClient().Do(httpReq)
-	if err != nil {
-		c.Err = err
-		return
-	}
-	defer func() { _ = httpResp.Body.Close() }()
-
-	bodyBytes, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		c.Err = fmt.Errorf("read response body: %w", err)
-		return
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		if urlErr.Timeout() || urlErr.Temporary() {
+			return true
+		}
 	}
 
-	c.Response = &request.Response{
-		RawResponse: httpResp,
-		StatusCode:  httpResp.StatusCode,
-		Header:      httpResp.Header,
-		Body:        bodyBytes,
+	errStr := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(errStr, "connection refused"):
+		return true
+	case strings.Contains(errStr, "connection reset"):
+		return true
+	case strings.Contains(errStr, "broken pipe"):
+		return true
+	case strings.Contains(errStr, "no such host"):
+		return true
+	case strings.Contains(errStr, "context deadline exceeded"):
+		return true
 	}
+
+	return false
 }
 
 // transportHandler 处理通道层认证（WebVPN 掉线重连）

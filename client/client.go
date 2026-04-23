@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"time"
 
 	"github.com/U1traVeno/hduwebvpn/handler"
 	"github.com/U1traVeno/hduwebvpn/request"
@@ -68,7 +69,8 @@ func NewClient(opts ...ClientOption) (*Client, error) {
 		cookiejar: jar,
 		transport: &transport.WebVPNTransport{},
 		httpClient: &http.Client{
-			Jar: jar,
+			Jar:     jar,
+			Timeout: 5 * time.Second,
 		},
 	}
 
