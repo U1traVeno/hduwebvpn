@@ -2,17 +2,18 @@ package transport
 
 import (
 	"context"
+	"crypto/md5"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/PuerkitoBio/goquery"
-	"github.com/U1traVeno/hduwebvpn/pkg/crypto"
+	"github.com/U1traVeno/hduwebvpn/pkg/sso"
 )
 
 // Mode 表示访问模式
@@ -94,7 +95,7 @@ func (t *WebVPNTransport) getDeviceID() string {
 	if t.deviceID == "" {
 		// 生成一个随机的 device ID（32-char MD5 格式）
 		randomStr := fmt.Sprintf("%d", time.Now().UnixNano())
-		t.deviceID = crypto.MD5Hash(randomStr)
+		t.deviceID = fmt.Sprintf("%x", md5.Sum([]byte(randomStr)))
 	}
 	return t.deviceID
 }
@@ -206,101 +207,6 @@ func (t *WebVPNTransport) startAuth(ctx context.Context, httpClient *http.Client
 	return result.Data.Action.LoginURL, nil
 }
 
-// extractFlowkeyCrypto 从 SSO 登录页提取 flowkey 和 cryptoKey
-func (t *WebVPNTransport) extractFlowkeyCrypto(ctx context.Context, httpClient *http.Client, ssoLoginURL string) (string, string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", ssoLoginURL, nil)
-	if err != nil {
-		return "", "", err
-	}
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", "", fmt.Errorf("fetch SSO login page: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return "", "", fmt.Errorf("parse SSO login page: %w", err)
-	}
-
-	flowkey := strings.TrimSpace(doc.Find("#login-page-flowkey").Text())
-	cryptoKey := strings.TrimSpace(doc.Find("#login-croypto").Text())
-
-	if flowkey == "" || cryptoKey == "" {
-		return "", "", errors.New("missing flowkey or cryptoKey from SSO login page")
-	}
-
-	return flowkey, cryptoKey, nil
-}
-
-// loginSSO 向 SSO 提交登录表单，获取 CAS ticket
-func (t *WebVPNTransport) loginSSO(ctx context.Context, httpClient *http.Client, ssoLoginURL, flowkey, cryptoKey, username, password string) (string, error) {
-	encryptedPwd, err := crypto.EncryptPasswordAES(cryptoKey, password)
-	if err != nil {
-		return "", fmt.Errorf("encrypt password: %w", err)
-	}
-
-	form := url.Values{
-		"username":     {username},
-		"type":         {"UsernamePassword"},
-		"_eventId":     {"submit"},
-		"geolocation":  {""},
-		"execution":    {flowkey},
-		"captcha_code": {""},
-		"croypto":      {cryptoKey}, // typo in original API
-		"password":     {encryptedPwd},
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", ssoLoginURL, strings.NewReader(form.Encode()))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Referer", ssoLoginURL)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-	req.Header.Set("Origin", "https://sso.hdu.edu.cn")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("SSO login request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	// 检查 SSO 登录是否成功（需要 3xx 重定向）
-	if resp.StatusCode >= 400 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("SSO login failed: status %d, body: %s", resp.StatusCode, string(bodyBytes))
-	}
-	if resp.StatusCode < 300 || resp.StatusCode >= 400 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("SSO login unexpected status: %d, body: %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	// 从 Location header 提取 ticket
-	location := resp.Header.Get("Location")
-	if location == "" {
-		return "", errors.New("missing Location header after SSO login")
-	}
-
-	// Location 格式: https://webvpn.hdu.edu.cn/callback/cas/{externalId}?ticket=ST-xxx
-	locURL, err := url.Parse(location)
-	if err != nil {
-		return "", fmt.Errorf("parse Location URL: %w", err)
-	}
-
-	ticket := locURL.Query().Get("ticket")
-	if ticket == "" {
-		return "", fmt.Errorf("missing ticket in Location: %s", location)
-	}
-
-	return ticket, nil
-}
-
 // finishAuth 完成认证，获取 webvpn-token
 func (t *WebVPNTransport) finishAuth(ctx context.Context, httpClient *http.Client, externalID, callbackURL, ticket string) error {
 	finishURL := fmt.Sprintf("https://%s%s", webVPNHost, authFinishURL)
@@ -354,6 +260,12 @@ func (t *WebVPNTransport) finishAuth(ctx context.Context, httpClient *http.Clien
 		return fmt.Errorf("finish auth returned code %d", result.Code)
 	}
 
+	// 获取站点列表，更新 URL 映射
+	err = t.FetchSiteList(ctx, httpClient)
+	if err != nil {
+		return fmt.Errorf("fetch site list: %w", err)
+	}
+
 	return nil
 }
 
@@ -396,28 +308,16 @@ func (t *WebVPNTransport) Reauth(client interface{}) error {
 		return fmt.Errorf("start auth: %w", err)
 	}
 
-	// Step 3: 提取 flowkey 和 cryptoKey
-	flowkey, cryptoKey, err := t.extractFlowkeyCrypto(ctx, httpClient, ssoLoginURL)
-	if err != nil {
-		return fmt.Errorf("extract flowkey/crypto: %w", err)
-	}
-
-	// Step 4: 登录 SSO，获取 ticket
-	ticket, err := t.loginSSO(ctx, httpClient, ssoLoginURL, flowkey, cryptoKey, username, password)
+	// Step 3: 登录 SSO，获取 ticket
+	ticket, err := sso.Auth(ctx, httpClient, ssoLoginURL, username, password)
 	if err != nil {
 		return fmt.Errorf("SSO login: %w", err)
 	}
 
-	// Step 5: 完成认证，获取 token（Set-Cookie 会自动存入 cookie jar）
+	// Step 4: 完成认证，获取 token（Set-Cookie 会自动存入 cookie jar）
 	err = t.finishAuth(ctx, httpClient, externalID, callbackURL, ticket)
 	if err != nil {
 		return fmt.Errorf("finish auth: %w", err)
-	}
-
-	// Step 6: 获取站点列表，更新 URL 映射
-	err = t.FetchSiteList(ctx, httpClient)
-	if err != nil {
-		return fmt.Errorf("fetch site list: %w", err)
 	}
 
 	return nil
@@ -553,34 +453,42 @@ func (t *WebVPNTransport) Decode(realURL *url.URL) *url.URL {
 		return &decoded
 	}
 
-	// 动态逆向解析: https://https-course-hdu-edu-cn-443.webvpn.hdu.edu.cn -> https://course.hdu.edu.cn
-	// 检查是否是 webvpn 格式的 URL
+	// 动态逆向解析:
+	//   https://https-course-hdu-edu-cn-443.webvpn.hdu.edu.cn -> https://course.hdu.edu.cn
+	//   https://http-course-hdu-edu-cn-80.webvpn.hdu.edu.cn  -> http://course.hdu.edu.cn
 	if !strings.HasSuffix(realURL.Host, ".webvpn.hdu.edu.cn") {
 		return nil
 	}
 
-	// 去掉 .webvpn.hdu.edu.cn 后缀
 	hostWithoutSuffix := strings.TrimSuffix(realURL.Host, ".webvpn.hdu.edu.cn")
 
-	// 检查是否是 https- 前缀格式
-	if !strings.HasPrefix(hostWithoutSuffix, "https-") {
+	// 提取原始 scheme（https- 或 http-）
+	var scheme string
+	var hostPart string
+	switch {
+	case strings.HasPrefix(hostWithoutSuffix, "https-"):
+		scheme = "https"
+		hostPart = strings.TrimPrefix(hostWithoutSuffix, "https-")
+	case strings.HasPrefix(hostWithoutSuffix, "http-"):
+		scheme = "http"
+		hostPart = strings.TrimPrefix(hostWithoutSuffix, "http-")
+	default:
 		return nil
 	}
 
-	// 去掉 https- 前缀，得到如 course-hdu-edu-cn-443
-	hostPart := strings.TrimPrefix(hostWithoutSuffix, "https-")
-
-	// 处理端口：如果以 -443 或 -80 结尾，去掉
-	if strings.HasSuffix(hostPart, "-443") {
-		hostPart = strings.TrimSuffix(hostPart, "-443")
-	} else if strings.HasSuffix(hostPart, "-80") {
-		hostPart = strings.TrimSuffix(hostPart, "-80")
+	// 处理端口后缀：-443、-80 或其他 -{port}
+	// 从末尾开始找最后一个 "-"，若其后是纯数字则视为端口
+	if lastDash := strings.LastIndex(hostPart, "-"); lastDash != -1 {
+		portStr := hostPart[lastDash+1:]
+		if _, err := strconv.Atoi(portStr); err == nil {
+			hostPart = hostPart[:lastDash]
+		}
 	}
 
-	// 将 - 替换回 .
 	originalHost := strings.ReplaceAll(hostPart, "-", ".")
 
 	decoded := *realURL
+	decoded.Scheme = scheme
 	decoded.Host = originalHost
 	return &decoded
 }
@@ -590,5 +498,8 @@ func (t *WebVPNTransport) IsAuthFailure(realURL *url.URL) bool {
 	if realURL.Host == "" {
 		return false
 	}
+	// webvpn 认证失效会被重定向到类似:
+	// https://webvpn.hdu.edu.cn?returnUrl=https%3A%2F%2Fhttps-course-hdu-edu-cn-443.webvpn.hdu.edu.cn
+	// 此时 Host 为 webvpn.hdu.edu.cn, 这种情况已经被下面的 HasSuffix 判断捕获（因为它不以 '.webvpn.hdu.edu.cn' 结尾）。
 	return !strings.HasSuffix(realURL.Host, ".webvpn.hdu.edu.cn")
 }

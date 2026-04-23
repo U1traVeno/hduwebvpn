@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/U1traVeno/hduwebvpn/pkg/crypto"
+	"github.com/U1traVeno/hduwebvpn/pkg/sso"
 	"github.com/joho/godotenv"
 )
 
@@ -120,7 +120,7 @@ func TestSSOLoginTrace(t *testing.T) {
 	}
 
 	// Step 4: Encrypt password
-	encryptedPwd, err := crypto.EncryptPasswordAES(cryptoKey, password)
+	encryptedPwd, err := sso.EncryptPasswordAES(cryptoKey, password)
 	if err != nil {
 		t.Fatalf("encrypt password: %v", err)
 	}

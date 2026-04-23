@@ -67,26 +67,14 @@ func NewClient(opts ...ClientOption) (*Client, error) {
 		services:  make(map[string]interface{}),
 		cookiejar: jar,
 		transport: &transport.WebVPNTransport{},
+		httpClient: &http.Client{
+			Jar: jar,
+		},
 	}
 
 	for _, opt := range opts {
 		opt(c)
 	}
-
-	// 配置 http.Client，禁用自动重定向
-	c.httpClient = &http.Client{
-		Jar: c.cookiejar,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse // 拦截 3xx，由 Middleware 处理
-		},
-	}
-
-	// TODO: 实现 CAS SSO 认证流程
-	// 1. GET /api/access/authentication/list 获取认证方式
-	// 2. POST /api/access/auth/start 获取 SSO 登录 URL
-	// 3. 访问 SSO 获取 ticket
-	// 4. POST /api/access/auth/finish 完成认证，获取 webvpn-token
-	// 5. 将 token 存入 cookiejar
 
 	return c, nil
 }

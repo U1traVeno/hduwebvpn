@@ -49,7 +49,7 @@
 //	    log.Fatal(err)
 //	}
 //	fmt.Println(resp.StatusCode)
-//	body, _ := io.ReadAll(resp.RawResponse.Body)
+//	fmt.Println(string(resp.Body))
 //
 // For full control over headers, build a Request manually:
 //
@@ -89,11 +89,12 @@
 //   - Auto Re-auth: If a request fails due to expired WebVPN or service authentication,
 //     the library automatically re-authenticates using the stored username/password and
 //     retries the request.
-//   - Redirect Handling: HTTP 3xx redirects are intercepted by middleware rather than
-//     followed automatically, so the library can detect auth failures and decode URLs.
+//   - Redirect Handling: HTTP 3xx redirects are followed automatically by the underlying
+//     http.Client. After the request completes, middleware inspects the final request URL
+//     to detect authentication failures (e.g., redirected to an SSO login page).
 //
 // # Response Body
 //
-// Response body data is available via resp.RawResponse.Body (an io.ReadCloser).
-// Callers are responsible for closing the body when done.
+// Response body data is available directly via resp.Body ([]byte). The body has already
+// been read and closed by the middleware chain.
 package hduwebvpn

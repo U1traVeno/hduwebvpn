@@ -68,9 +68,3 @@ func (s *Service) Post(path string, body []byte) (*request.Response, error) {
 	}
 	return s.doer.Do(req)
 }
-
-// doSSO 执行业务层 SSO 认证
-func (s *Service) DoSSO() error {
-	// TODO: 实现 CAS SSO 认证流程
-	return nil
-}

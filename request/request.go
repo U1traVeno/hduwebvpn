@@ -17,12 +17,9 @@ type Request struct {
 
 // Response 是请求响应
 type Response struct {
-	RawResponse *http.Response // 原始的 http.Response
-	StatusCode  int
-	Header      http.Header
-	body        []byte
-
-	// 用于分离重定向逻辑
-	RealRedirectURL     *url.URL // 从 Location Header 直接解析出的实际重定向地址
-	BusinessRedirectURL *url.URL // 经过 Transport 解码还原后的业务层重定向地址
+	BusinessReqURL *url.URL       // 实际请求的业务地址。注意，经过重定向后可能与 Request.BusinessURL 不同。
+	RawResponse    *http.Response // 原始的 http.Response
+	StatusCode     int
+	Header         http.Header
+	Body           []byte
 }

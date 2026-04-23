@@ -8,11 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/cookiejar"
-	"net/url"
-	"strings"
 
-	"github.com/PuerkitoBio/goquery"
-	"github.com/U1traVeno/hduwebvpn/pkg/crypto"
+	"github.com/U1traVeno/hduwebvpn/pkg/sso"
 	"github.com/U1traVeno/hduwebvpn/request"
 	"github.com/U1traVeno/hduwebvpn/transport"
 )
@@ -100,24 +97,20 @@ func (c *Context) execBaseDo() {
 		c.Err = err
 		return
 	}
+	defer func() { _ = httpResp.Body.Close() }()
+
+	bodyBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		c.Err = fmt.Errorf("read response body: %w", err)
+		return
+	}
 
 	c.Response = &request.Response{
 		RawResponse: httpResp,
 		StatusCode:  httpResp.StatusCode,
 		Header:      httpResp.Header,
+		Body:        bodyBytes,
 	}
-}
-
-// isRedirect 判断状态码是否为重定向
-func isRedirect(statusCode int) bool {
-	return statusCode >= 300 && statusCode < 400
-}
-
-// isSSOHost 判断 host 是否为 SSO 相关域名
-func isSSOHost(host string) bool {
-	return host == SSOHost || host == CASHost ||
-		strings.HasPrefix(host, "sso-") || strings.HasPrefix(host, "cas-") ||
-		strings.HasPrefix(host, "sso.") || strings.HasPrefix(host, "cas.")
 }
 
 // transportHandler 处理通道层认证（WebVPN 掉线重连）
@@ -131,23 +124,24 @@ func transportHandler(c *Context) {
 		return
 	}
 
+	c.Response.BusinessReqURL = c.client.GetTransport().Decode(c.Response.RawResponse.Request.URL)
+
 	resp := c.Response
-	if isRedirect(resp.StatusCode) {
-		realLoc, err := url.Parse(resp.Header.Get("Location"))
-		if err == nil {
-			resp.RealRedirectURL = realLoc
-
-			if t.IsAuthFailure(realLoc) {
-				if authErr := t.Reauth(c.client); authErr != nil {
-					c.Err = fmt.Errorf("transport reauth failed: %w", authErr)
-					return
-				}
-				transportHandler(c)
-				return
-			}
-
-			resp.BusinessRedirectURL = t.Decode(realLoc)
+	// http.Client 已经默认会跟随重定向。因此，最终的响应应该要么是被重定向到 webvpn 的登录页，要么就是最终的业务响应。
+	// 其中如果是前者，那么 RawResponse.Request.URL 应当是 sso.hdu.edu.cn, 此时进行 webvpn Reauth
+	// 如果是后者，那么 RawResponse.Request.URL 应当是业务系统的 URL，此时通过了 webvpn 的认证，无需 ReAuth。
+	if t.IsAuthFailure(resp.RawResponse.Request.URL) {
+		c.logger.InfoContext(
+			context.Background(),
+			"received WebVPN SSO redirect",
+		)
+		if err := t.Reauth(c.client); err != nil {
+			c.Err = fmt.Errorf("transport reauth failed: %w", err)
+			return
 		}
+		// 重新执行请求
+		transportHandler(c)
+		return
 	}
 }
 
@@ -160,122 +154,25 @@ func serviceAuthHandler(c *Context) {
 	}
 
 	resp := c.Response
-	if isRedirect(resp.StatusCode) && resp.BusinessRedirectURL != nil {
-		// 发生了重定向，一般是因为 SSO 认证失败了。有时候服务不会把用户直接重定向到 SSO,
-		// 而是先重定向到一个中转页，这个中转页会解析出真正的 SSO 地址并重定向过去。
-		// 这里为了省事直接判断只要发生了重定向就执行 SSO 认证流程，认证成功后再重新执行一次请求。
+	// http.Client 已经默认会跟随重定向。因此，最终的响应应该要么是被重定向到 SSO 登录页，要么就是最终的业务响应。
+	// 如果是前者，则直接执行 SSO 认证；如果是后者，则说明请求已经成功完成，无需再认证。
+	if sso.IsAuthFailure(resp.BusinessReqURL.Host) {
 		c.logger.InfoContext(
 			context.Background(),
-			"received redirect",
+			"received SSO redirect",
 			"location", resp.Header.Get("Location"),
-			"business_redirect", resp.BusinessRedirectURL.String(),
 		)
 		username := c.client.GetUsername()
 		password := c.client.GetPassword()
 
-		if err := c.doServiceSSO(username, password); err != nil {
-			c.Err = err
+		if _, err := sso.Auth(context.Background(), c.client.GetHTTPClient(), resp.RawResponse.Request.URL.String(), username, password); err != nil {
+			c.Err = fmt.Errorf("sso auth failed: %w", err)
 			return
 		}
 		// 重新执行请求
 		serviceAuthHandler(c)
 		return
 	}
-}
-
-// doServiceSSO 执行业务层 SSO 认证流程
-func (c *Context) doServiceSSO(username, password string) error {
-	ctx := context.Background()
-	t := c.client.GetTransport()
-
-	// WebVPN 模式下，将 SSO URL 转换为 WebVPN 格式
-	LoginURL := t.Encode(&url.URL{Scheme: "https", Host: SSOHost, Path: "/login"})
-
-	// Step 1: 获取 flowkey 和 cryptoKey（使用 WebVPN 转换后的 URL）
-	flowkey, cryptoKey, err := c.getFlowkeyCryptoFrom(ctx, LoginURL.String())
-	if err != nil {
-		return fmt.Errorf("get flowkey/crypto: %w", err)
-	}
-
-	// Step 2: 加密密码
-	encryptedPwd, err := crypto.EncryptPasswordAES(cryptoKey, password)
-	if err != nil {
-		return fmt.Errorf("encrypt password: %w", err)
-	}
-
-	// Step 3: POST 登录表单
-	form := url.Values{
-		"username":     {username},
-		"type":         {"UsernamePassword"},
-		"_eventId":     {"submit"},
-		"geolocation":  {""},
-		"execution":    {flowkey},
-		"captcha_code": {""},
-		"croypto":      {cryptoKey}, // typo in original API
-		"password":     {encryptedPwd},
-	}
-
-	loginReq, err := http.NewRequestWithContext(ctx, "POST", LoginURL.String(), strings.NewReader(form.Encode()))
-	if err != nil {
-		return err
-	}
-	loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	loginReq.Header.Set("Referer", LoginURL.String())
-	loginReq.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	loginReq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q,image/webp=0.9,*/*;q=0.8")
-	loginReq.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-	loginReq.Header.Set("Origin", "https://sso.hdu.edu.cn")
-
-	loginResp, err := c.client.GetHTTPClient().Do(loginReq)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = loginResp.Body.Close() }()
-
-	// Step 4: 检查响应，如果是 4xx 则认为登录失败，返回登录失败错误，如果是 3xx 则认为登录成功（SSO 成功后会重定向回业务系统）
-	if loginResp.StatusCode >= 400 {
-		bodyBytes, _ := io.ReadAll(loginResp.Body)
-		return fmt.Errorf("%w: status %d, body: %s", ErrLoginFailed, loginResp.StatusCode, string(bodyBytes))
-	}
-	if !isRedirect(loginResp.StatusCode) {
-		bodyBytes, _ := io.ReadAll(loginResp.Body)
-		return fmt.Errorf("%w: expected redirect but got status %d, body: %s", ErrLoginFailed, loginResp.StatusCode, string(bodyBytes))
-	}
-	finalHost := loginResp.Header.Get("Location")
-	if finalHost == "" {
-		return fmt.Errorf("%w: missing Location header", ErrLoginFailed)
-	}
-	c.logger.InfoContext(ctx, "sso login successful", "username", username, "final_host", finalHost)
-	return nil
-}
-
-// getFlowkeyCryptoFrom 从 SSO 登录页提取 flowkey 和 cryptoKey
-func (c *Context) getFlowkeyCryptoFrom(ctx context.Context, loginURL string) (flowkey, cryptoKey string, err error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", loginURL, nil)
-	if err != nil {
-		return "", "", err
-	}
-	req.Header.Set("Referer", loginURL)
-
-	resp, err := c.client.GetHTTPClient().Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return "", "", err
-	}
-
-	flowkey = doc.Find("#login-page-flowkey").Text()
-	cryptoKey = doc.Find("#login-croypto").Text()
-
-	if flowkey == "" || cryptoKey == "" {
-		return "", "", ErrGetFlowkey
-	}
-
-	return strings.TrimSpace(flowkey), strings.TrimSpace(cryptoKey), nil
 }
 
 // Do sends a request by building a Context and starting the middleware chain
