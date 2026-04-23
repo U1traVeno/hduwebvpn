@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -93,7 +94,12 @@ func (c *Context) execBaseDo() {
 			time.Sleep(baseDelay * time.Duration(attempt))
 		}
 
-		httpReq, err := http.NewRequest(c.Request.Method, c.Request.RealURL.String(), nil)
+		var bodyReader io.Reader
+		if len(c.Request.Body) > 0 {
+			bodyReader = bytes.NewReader(c.Request.Body)
+		}
+
+		httpReq, err := http.NewRequest(c.Request.Method, c.Request.RealURL.String(), bodyReader)
 		if err != nil {
 			c.Err = err
 			return
