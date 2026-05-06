@@ -17,6 +17,7 @@ const (
 )
 
 // Re-export types from client package
+type Client = client.Client
 type ClientOption = client.ClientOption
 
 // Re-export types from request package
