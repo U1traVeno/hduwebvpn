@@ -1,6 +1,7 @@
 package client
 
 import (
+	"errors"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -71,6 +72,12 @@ func NewClient(opts ...ClientOption) (*Client, error) {
 		httpClient: &http.Client{
 			Jar:     jar,
 			Timeout: 5 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 20 {
+					return errors.New("stopped after 20 redirects")
+				}
+				return nil
+			},
 		},
 	}
 
