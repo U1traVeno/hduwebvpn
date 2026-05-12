@@ -120,6 +120,50 @@ func MD5Hash(text string) string {
 	return fmt.Sprintf("%x", hash)
 }
 
+// tryGetTicketFromSession 使用禁止重定向的 client 探测 ssoLoginURL，
+// 检测用户是否已有活跃的 SSO 会话。如果有，返回 ticket 和重定向目标 URL。
+func tryGetTicketFromSession(ctx context.Context, httpClient *http.Client, ssoLoginURL string) (ticket, redirectURL string, err error) {
+	tempClient := &http.Client{
+		Transport:     httpClient.Transport,
+		Jar:           httpClient.Jar,
+		Timeout:       httpClient.Timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse },
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", ssoLoginURL, nil)
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Referer", ssoLoginURL)
+
+	resp, err := tempClient.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusMovedPermanently {
+		return "", "", fmt.Errorf("no active SSO session: status %d", resp.StatusCode)
+	}
+
+	loc := resp.Header.Get("Location")
+	if loc == "" {
+		return "", "", fmt.Errorf("no active SSO session: missing Location header")
+	}
+
+	u, err := url.Parse(loc)
+	if err != nil {
+		return "", "", fmt.Errorf("no active SSO session: invalid Location %q", loc)
+	}
+
+	ticket = u.Query().Get("ticket")
+	if ticket == "" {
+		return "", "", fmt.Errorf("no active SSO session: no ticket in Location")
+	}
+
+	return ticket, loc, nil
+}
+
 // Auth 执行完整的 SSO 登录流程，返回登录成功后的 ticket。
 func Auth(
 	ctx context.Context,
@@ -128,6 +172,19 @@ func Auth(
 	username,
 	password string,
 ) (string, error) {
+	// 先检测是否已有活跃的 SSO 会话，避免重复登录。
+	if ticket, redirectURL, err := tryGetTicketFromSession(ctx, httpClient, ssoLoginURL); err == nil {
+		followReq, followErr := http.NewRequestWithContext(ctx, http.MethodGet, redirectURL, nil)
+		if followErr == nil {
+			followResp, followDoErr := httpClient.Do(followReq)
+			if followDoErr == nil && followResp != nil {
+				_, _ = io.Copy(io.Discard, followResp.Body)
+				_ = followResp.Body.Close()
+			}
+		}
+		return ticket, nil
+	}
+
 	flowkey, cryptoKey, err := getFlowkeyCryptoFrom(ctx, httpClient, ssoLoginURL)
 	if err != nil {
 		return "", fmt.Errorf("get flowkey/crypto: %w", err)
